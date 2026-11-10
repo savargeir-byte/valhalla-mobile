@@ -1,0 +1,145 @@
+# iOS-only build of the iOS 16 compatible xcframework (patches/README.md).
+# Manual only. It builds, audits, tests and attests the zip and uploads it as
+# a workflow artifact; it creates no tag or release and publishes nothing.
+name: GoIce iOS 16 xcframework
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MIN_IOS: "16.5"
+
+jobs:
+  build:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        arch: ["arm64-ios", "arm64-ios-simulator", "x64-ios-simulator"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4.0"
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg && git -C vcpkg checkout 2025.10.17
+          ./vcpkg/bootstrap-vcpkg.sh
+
+      - name: Build ${{ matrix.arch }}
+        run: VCPKG_ROOT=`pwd`/vcpkg ./build.sh --ios ${{ matrix.arch }}
+
+      - name: The Valhalla patch is in the build
+        run: |
+          git -C src/valhalla apply --reverse --check ../../patches/valhalla-costmatrix-no-pmr.patch
+          ! grep -n 'pmr::' src/valhalla/src/thor/costmatrix.cc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: build/apple/${{ matrix.arch }}/install
+
+  xcframework:
+    needs: build
+    runs-on: macos-15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4.0"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: build/apple
+
+      - name: Move artifacts to correct locations
+        run: |
+          for arch in arm64-ios arm64-ios-simulator x64-ios-simulator; do
+            mkdir -p build/apple/$arch/install
+            mv build/apple/$arch/* build/apple/$arch/install/ || true
+          done
+
+      - name: Create XCFramework
+        run: ./scripts/create_xcframework.sh
+
+      - name: Audit libc++ imports and deployment targets
+        run: |
+          python3 scripts/audit_ios_libcxx.py "$MIN_IOS" \
+            build/apple/valhalla-wrapper.xcframework/*/libvalhalla_all.a
+          for lib in build/apple/valhalla-wrapper.xcframework/*/libvalhalla_all.a; do
+            echo "$lib: $(lipo -archs "$lib")"
+          done
+          nm -A -u build/apple/valhalla-wrapper.xcframework/ios-arm64/libvalhalla_all.a \
+            > libvalhalla_all-ios-arm64-imports.txt
+
+      - name: Zip
+        run: |
+          cd build/apple
+          zip -X -r ../../valhalla-wrapper.xcframework.zip valhalla-wrapper.xcframework
+          cd ../..
+          shasum -a 256 valhalla-wrapper.xcframework.zip | tee valhalla-wrapper.xcframework.zip.sha256
+          swift package compute-checksum valhalla-wrapper.xcframework.zip
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: valhalla-wrapper.xcframework.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-wrapper.xcframework.zip
+          path: |
+            valhalla-wrapper.xcframework.zip
+            valhalla-wrapper.xcframework.zip.sha256
+            libvalhalla_all-ios-arm64-imports.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-wrapper.xcframework
+          path: build/apple/valhalla-wrapper.xcframework
+
+  test:
+    needs: xcframework
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4.0"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: valhalla-wrapper.xcframework
+          path: build/apple/valhalla-wrapper.xcframework
+
+      - name: Simulator runtimes
+        run: xcrun simctl list runtimes
+
+      - name: Routing and matrix tests
+        run: |
+          set -o pipefail
+          xcodebuild -scheme ValhallaMobile test -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16e,OS=18.6' \
+            -resultBundlePath TestResults.xcresult | xcbeautify
+        env:
+          VALHALLA_MOBILE_DEV: "true"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-artifacts
+          path: |
+            TestResults.xcresult
+            ~/Library/Logs/DiagnosticReports/*.crash
+            ~/Library/Logs/DiagnosticReports/*.ips

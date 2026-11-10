@@ -38,21 +38,21 @@ vcpkg_triplet_overlay=`pwd`/triplets
 if [ "$1" == "arm64-ios" ]; then
     sdk=iphoneos
     system_name=iOS
-    min_deployment_target=16.4
+    min_deployment_target=16.5
     arch=arm64
     verify_target=arm64-apple-ios$min_deployment_target
     vcpkg_target_triplet=arm64-ios
 elif [ "$1" == "arm64-ios-simulator" ]; then
     sdk=iphonesimulator
     system_name=iOS
-    min_deployment_target=16.4
+    min_deployment_target=16.5
     arch=arm64
     verify_target=arm64-apple-ios$min_deployment_target-simulator
     vcpkg_target_triplet=arm64-ios-simulator
 elif [ "$1" == "x64-ios-simulator" ]; then
     sdk=iphonesimulator
     system_name=iOS
-    min_deployment_target=16.4
+    min_deployment_target=16.5
     arch=x86_64
     verify_target=x86_64-apple-ios$min_deployment_target-simulator
     vcpkg_target_triplet=x64-ios-simulator
@@ -87,6 +87,17 @@ else
     exit 1
 fi
 
+# The Valhalla submodule is upstream; patches/ holds the changes it needs to
+# run on every iOS version this package declares (see patches/README.md).
+for patch in `pwd`/patches/valhalla-*.patch; do
+    if git -C src/valhalla apply --check "$patch" 2>/dev/null; then
+        git -C src/valhalla apply "$patch" || exit $?
+    elif ! git -C src/valhalla apply --reverse --check "$patch" 2>/dev/null; then
+        echo "Error: $patch neither applies nor is already applied"
+        exit 1
+    fi
+done
+
 build_dir=`pwd`/build/apple/$vcpkg_target_triplet
 wrapper_dir=`pwd`/src
 
@@ -100,6 +111,7 @@ cmake -DCMAKE_TOOLCHAIN_FILE=$vcpkg_toolchain_file \
     -DCMAKE_OSX_SYSROOT=$sdk \
     -DCMAKE_OSX_ARCHITECTURES=$arch \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=$min_deployment_target \
+    "-DCMAKE_CXX_FLAGS=-Werror=unguarded-availability-new" \
     -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
     -S $wrapper_dir \
     -B . \

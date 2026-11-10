@@ -1,0 +1,52 @@
+diff --git a/src/thor/costmatrix.cc b/src/thor/costmatrix.cc
+index de426be..edff4ab 100644
+--- a/src/thor/costmatrix.cc
++++ b/src/thor/costmatrix.cc
+@@ -93,22 +93,15 @@ struct CostMatrix::LocationStatus {
+ 
+ class CostMatrix::ReachedMap {
+ public:
+-  using PmrVector = std::vector<uint32_t, std::pmr::polymorphic_allocator<uint32_t>>;
+-
+-  ReachedMap()
+-      : pool_(std::pmr::new_delete_resource()), vec_alloc_(&pool_),
+-        storage_(std::pmr::polymorphic_allocator<std::pair<const uint64_t, PmrVector>>(&pool_)) {
+-  }
++  // std::allocator, not std::pmr: the pmr runtime is in the OS libc++ only
++  // from iOS 17, and an app referencing it is killed by dyld on iOS 16.
++  using LocationList = std::vector<uint32_t>;
+ 
+   void add(uint64_t key, uint32_t value) {
+-    auto it = storage_.find(key);
+-    if (it == storage_.end()) {
+-      it = storage_.emplace(key, PmrVector(vec_alloc_)).first;
+-    }
+-    it->second.push_back(value);
++    storage_[key].push_back(value);
+   }
+ 
+-  const PmrVector* get(uint64_t key) const {
++  const LocationList* get(uint64_t key) const {
+     auto it = storage_.find(key);
+     if (it == storage_.end()) {
+       return nullptr;
+@@ -121,9 +114,7 @@ public:
+   }
+ 
+ private:
+-  std::pmr::unsynchronized_pool_resource pool_;
+-  std::pmr::polymorphic_allocator<uint32_t> vec_alloc_;
+-  ankerl::unordered_dense::pmr::map<uint64_t, PmrVector> storage_;
++  ankerl::unordered_dense::map<uint64_t, LocationList> storage_;
+ };
+ 
+ // Constructor with cost threshold.
+@@ -887,7 +878,7 @@ void CostMatrix::CheckConnections(const uint32_t loc_idx,
+   // Get the opposing edge. Get a list of opposing locations whose
+   // search has reached this edge.
+   GraphId opp_edgeid = pred.opp_edgeid();
+-  const ReachedMap::PmrVector* opp_locs = (FORWARD ? targets_ : sources_)->get(opp_edgeid);
++  const ReachedMap::LocationList* opp_locs = (FORWARD ? targets_ : sources_)->get(opp_edgeid);
+   if (!opp_locs) {
+     return;
+   }

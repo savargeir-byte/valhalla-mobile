@@ -27,7 +27,7 @@ if !useLocalBinary {
 let package = Package(
     name: "ValhallaMobile",
     platforms: [
-        .iOS("16.4")
+        .iOS("16.5")
         // .tvOS(.v13),
         // .watchOS(.v6),
         // .macOS(.v10_13)
